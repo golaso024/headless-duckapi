@@ -58,6 +58,7 @@
 - **`bot/`** — сама логика бота. Один и тот же код работает **без изменений** и в облаке Telegram Serverless (см. [`serverless/`](serverless/README.md)), и на любом VPS; под VPS затронуты ровно две строки (помечены `[VPS port patch]`).
 - **`platform/sdk/`** — тонкий слой совместимости, реализующий облачный модуль `sdk` для Node.js: `api` → Bot API по HTTPS (с multipart-загрузкой файлов), `db` → SQLite через встроенный `node:sqlite`, `fetch` → глобальный fetch. Именно поэтому один и тот же код живёт в обоих местах.
 - **`web/`** — фронтенд Mini App. Он изначально умеет оба транспорта: `Serverless.call` платформы в облаке и обычный `POST /api/settings` с подписанным `initData` при самостоятельном хостинге.
+- **`api.js`** — опциональный вход без Telegram: тот же клиент протокола `bot/lib/duckai.js` за OpenAI-совместимым HTTP-сервером (`/v1/chat/completions`, `/v1/models`, `/health`). Без `BOT_TOKEN` и БД — см. [OpenAI-совместимый API](#openai-совместимый-api-без-токен-бота).
 
 ## Быстрый старт (Docker)
 
@@ -91,6 +92,51 @@ journalctl -u duckai -f
 
 > Токен — в **@BotFather → твой бот → API Token**. Запускай либо эту копию, либо Serverless-копию на одном токене, но не обе сразу (при старте VPS-версия удаляет webhook — побеждает та, что запущена последней).
 
+## OpenAI-совместимый API (без токен-бота)
+
+С версии v1.1.0 тот же pure-JS протокол duck.ai наружу отдаёт ещё и **OpenAI-совместимый HTTP API** — ноль зависимостей от Telegram: не нужен ни `BOT_TOKEN`, ни `.env`, ни SQLite (токены челленджа кэшируются в памяти процесса). Тот же солвер, тот же стриминг, те же модели — просто `POST /v1/chat/completions`:
+
+```bash
+# Docker — только API:
+docker compose --profile api up -d --build headless-duckapi-api
+# → http://localhost:8081/v1/chat/completions
+
+# Нативно:
+node api.js                   # или: PORT=8080 API_KEY=secret node api.js
+node api.js models            # вывести живой список моделей и выйти
+```
+
+Проверка:
+
+```bash
+curl http://localhost:8081/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Привет!"}],"stream":true}'
+```
+
+| Эндпоинт | Что делает |
+|---|---|
+| `GET /v1/models` | Живой список моделей с duck.ai (статический фолбэк, если duck.ai недоступен) |
+| `POST /v1/chat/completions` | Chat completion, `stream: true/false` — SSE-чанки в формате OpenAI |
+| `GET /health` | Проба живости (её же использует Docker healthcheck) |
+
+Совместимость с OpenAI-клиентами (`baseURL = http://localhost:8081/v1`, `apiKey` — любой, если не задан `API_KEY`):
+
+- устаревшие id моделей (`gpt-4o-mini`, `claude-3-haiku`, …) под капотом маппятся на ближайшую актуальную модель duck.ai — истина в `GET /v1/models`;
+- `content` может быть массивом частей: `{type:"text"}` и `{type:"image_url"}` (data: или http(s)-URL; JPEG перекодируется в PNG на чистом JS — duck.ai JPEG-части не принимает);
+- `role: "developer"` маппится в `system`;
+- `temperature`, `max_tokens` и прочее принимается и игнорируется — у duck.ai таких ручек нет.
+
+Расширения поверх схемы OpenAI, все опциональные:
+
+| Поле | Что делает |
+|---|---|
+| `reasoning_effort: "none" / "low" / "medium"` | reasoning effort duck.ai (валидируется по модели — получишь внятный 400 вместо невнятного от duck.ai) |
+| `web_search: true` | тул WebSearch duck.ai |
+| `image: true` | тул GenerateImage duck.ai — в ответе появится `message.images: ["data:image/…;base64,…"]` (работает на GPT-моделях; дефолт `/img` у бота — `gpt-6-luna`) |
+
+Задай `API_KEY` (в `.env` — compose подхватит сам — или в переменных окружения), чтобы требовать `Authorization: Bearer <API_KEY>`; пустое значение оставляй только в доверенной сети.
+
 ## Конфигурация (`.env`)
 
 | Переменная | Нужна | Что делает |
@@ -100,6 +146,8 @@ journalctl -u duckai -f
 | `WEBAPP_URL` | — | Публичный `https://`-адрес этого хоста для кнопки 🎛 Настройки (Mini App). Телеграм принимает только `https`; если пусто — кнопка скрывается, всё то же самое доступно через `/settings` |
 | `PORT` | — | HTTP-порт Mini App/API (по умолчанию `8080`) |
 | `DATA_DIR` | — | Папка SQLite-хранилища (по умолчанию `./data`) |
+| `API_PORT` | — | Хост-порт контейнера API (docker compose, сервис `headless-duckapi-api`; по умолчанию `8081`) |
+| `API_KEY` | — | Bearer-токен для API-режима (`api.js`): клиенты шлют `Authorization: Bearer <API_KEY>`. Пусто = открытый сервер |
 
 ### Mini App по HTTPS (опционально)
 

@@ -57,6 +57,7 @@ Streaming answers · GPT / Claude / Mistral · image generation · photo vision 
 - **`bot/`** — the actual bot logic. It runs **unchanged** on both Telegram's Serverless cloud (see [`serverless/`](serverless/README.md)) and any VPS; only two lines are patched for VPS life (marked `[VPS port patch]`).
 - **`platform/sdk/`** — a thin compatibility layer that implements the cloud platform's `sdk` module for Node.js: `api` → Bot API over HTTPS (with multipart file uploads), `db` → SQLite via the built-in `node:sqlite`, `fetch` → global fetch. This is what makes the same code run in both places.
 - **`web/`** — the Mini App frontend. It already speaks both transports: the platform's `Serverless.call` in the cloud, and plain `POST /api/settings` with a signed `initData` header when self-hosted.
+- **`api.js`** — an optional Telegram-free entrypoint: the same `bot/lib/duckai.js` protocol client behind an OpenAI-compatible HTTP server (`/v1/chat/completions`, `/v1/models`, `/health`). No `BOT_TOKEN`, no DB — see [OpenAI-compatible API](#openai-compatible-api-no-telegram-token-needed).
 
 ## Quick start (Docker)
 
@@ -90,6 +91,51 @@ journalctl -u duckai -f
 
 > Get the token from **@BotFather → your bot → API Token**. Use a bot token of a bot you control; don't run this and the Serverless copy on the same token at the same time (the VPS build removes the webhook on boot — last one started wins).
 
+## OpenAI-compatible API (no Telegram token needed)
+
+Since v1.1.0 the same pure-JS duck.ai protocol is also exposed as an **OpenAI-compatible HTTP API** — zero Telegram dependencies: no `BOT_TOKEN`, no `.env`, no SQLite (challenge tokens are cached in process memory). Same challenge solver, same streaming, same models — just `POST /v1/chat/completions`:
+
+```bash
+# Docker — API only:
+docker compose --profile api up -d --build headless-duckapi-api
+# → http://localhost:8081/v1/chat/completions
+
+# Native:
+node api.js                   # or: PORT=8080 API_KEY=secret node api.js
+node api.js models            # print the live model list and exit
+```
+
+Try it:
+
+```bash
+curl http://localhost:8081/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+```
+
+| Endpoint | Description |
+|---|---|
+| `GET /v1/models` | Live model list from duck.ai (static fallback if duck.ai is unreachable) |
+| `POST /v1/chat/completions` | Chat completion, `stream: true/false` — SSE chunks in the OpenAI format |
+| `GET /health` | Liveness probe (also used by the Docker healthcheck) |
+
+OpenAI client compatibility (`baseURL = http://localhost:8081/v1`, any `apiKey` unless `API_KEY` is set):
+
+- stale model ids (`gpt-4o-mini`, `claude-3-haiku`, …) resolve to the closest current duck.ai model — `GET /v1/models` is the source of truth;
+- `content` may be an array of parts: `{type:"text"}` and `{type:"image_url"}` (data: or http(s) URLs; JPEG is re-encoded to PNG in pure JS — duck.ai rejects JPEG parts);
+- `role: "developer"` maps to `system`;
+- `temperature`, `max_tokens` and friends are accepted and ignored — duck.ai has no such knobs.
+
+Extensions beyond the OpenAI schema, all optional:
+
+| Field | Meaning |
+|---|---|
+| `reasoning_effort: "none" / "low" / "medium"` | duck.ai reasoning effort (validated against the model, so you get a 400 instead of a duck.ai 400) |
+| `web_search: true` | duck.ai WebSearch tool |
+| `image: true` | duck.ai GenerateImage tool — the response carries `message.images: ["data:image/…;base64,…"]` (known to work with the GPT models; the bot's default for `/img` is `gpt-6-luna`) |
+
+Set `API_KEY` (in `.env` for the Docker profile — compose picks it up automatically — or in the environment) to require `Authorization: Bearer <API_KEY>`; leave it empty only on a trusted network.
+
 ## Configuration (`.env`)
 
 | Variable | Required | Description |
@@ -99,6 +145,8 @@ journalctl -u duckai -f
 | `WEBAPP_URL` | — | Public `https://` URL of this host for the 🎛 Настройки Mini App button. Telegram only accepts `https` there; if unset the button is hidden and `/settings` still covers everything |
 | `PORT` | — | HTTP port for the Mini App/API server (default `8080`) |
 | `DATA_DIR` | — | SQLite storage directory (default `./data`) |
+| `API_PORT` | — | Host port for the API container (docker compose, `headless-duckapi-api` service; default `8081`) |
+| `API_KEY` | — | Bearer token for the API mode (`api.js`): clients send `Authorization: Bearer <API_KEY>`. Empty = open server |
 
 ### Mini App over HTTPS (optional)
 

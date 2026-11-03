@@ -1,4 +1,5 @@
 services:
+  # Telegram bot (default): needs BOT_TOKEN in .env — see .env.example
   headless-duckapi:
     build: .
     image: headless-duckapi:latest
@@ -9,6 +10,22 @@ services:
       - "${PORT:-8080}:8080"
     volumes:
       - headless-duckapi-data:/app/data
+
+  # OpenAI-compatible API — no Telegram, no BOT_TOKEN, no .env required:
+  #   docker compose --profile api up -d --build headless-duckapi-api
+  #   curl http://localhost:8081/v1/models
+  headless-duckapi-api:
+    build: .
+    image: headless-duckapi:latest
+    container_name: headless-duckapi-api
+    command: node api.js
+    restart: unless-stopped
+    profiles: ["api"]
+    environment:
+      PORT: 8080
+      API_KEY: ${API_KEY:-}
+    ports:
+      - "${API_PORT:-8081}:8080"
 
 volumes:
   headless-duckapi-data:
