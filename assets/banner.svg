@@ -17,7 +17,7 @@
 
   <text x="80" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="86" font-weight="700" fill="#f0f6fc" letter-spacing="1">headless-duckapi</text>
   <rect x="84" y="156" width="230" height="6" rx="3" fill="url(#accent)"/>
-  <text x="80" y="204" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="27" fill="#8b949e">DuckDuckGo AI Chat (duck.ai) as a Telegram bot — GPT, Claude, Mistral,</text>
+  <text x="80" y="204" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="27" fill="#8b949e">Free GPT/Claude/Mistral via duck.ai — Telegram bot + OpenAI-compatible API (no keys, no browser, pure JS)</text>
   <text x="80" y="240" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="27" fill="#8b949e">streaming, image generation, vision. Pure JS protocol client, self-hosted.</text>
 
   <text x="985" y="196" font-size="120" text-anchor="middle">&#129425;</text>
