@@ -2,8 +2,8 @@
 
 <h1 align="center">headless-duckapi</h1>
 
-<p align="center"><b>A Telegram AI bot running on DuckDuckGo's free duck.ai models.<br>
-Streaming answers · GPT / Claude / Mistral · image generation · photo vision · Mini App settings</b></p>
+<p align="center"><b>A Telegram bot and an OpenAI-compatible API on DuckDuckGo's free duck.ai models.<br>
+Streaming answers · GPT / Claude / Mistral · image generation · photo vision · no API keys</b></p>
 
 <p align="center">
   <a href="README.ru.md">🇷🇺 README на русском</a>&nbsp;·&nbsp;
@@ -68,6 +68,15 @@ docker compose up -d --build
 ```
 
 That's it — open the bot in Telegram and send `/start`. Logs: `docker compose logs -f`.
+
+Don't want to clone and build? There's a prebuilt image (GitHub Actions builds it on every `v*` tag):
+
+```bash
+# API mode, no Telegram token:
+docker run -d -p 8081:8080 -e API_KEY=secret ghcr.io/golaso024/headless-duckapi:latest node api.js
+# or the bot:
+docker run -d -e BOT_TOKEN=123:ABC ghcr.io/golaso024/headless-duckapi:latest
+```
 
 ## Quick start (native)
 
