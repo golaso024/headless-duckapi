@@ -2,16 +2,19 @@
 
 <h1 align="center">headless-duckapi</h1>
 
-<p align="center"><b>Телеграм-бот на бесплатных моделях duck.ai от DuckDuckGo.<br>
-Живой стриминг · GPT / Claude / Mistral · генерация картинок · понимание фото · Mini App</b></p>
+<p align="center"><b>Телеграм-бот и OpenAI-совместимый API на бесплатных моделях duck.ai.<br>
+Живой стриминг · GPT / Claude / Mistral · генерация картинок · понимание фото · без API-ключей</b></p>
 
 <p align="center">
   <a href="README.md">🇬🇧 English README</a>&nbsp;·&nbsp;
   <a href="serverless/README.md">☁️ Вариант для Telegram Serverless</a>&nbsp;·&nbsp;
+  <a href="https://habr.com/ru/articles/1097568/">📖 Разбор протокола на Хабре</a>&nbsp;·&nbsp;
   <a href="LICENSE">MIT</a>
 </p>
 
 > **headless-duckapi** превращает чат [duck.ai](https://duck.ai) (тот самый бесплатный от DuckDuckGo — без API-ключей, без регистрации) в полноценного Telegram-бота. Внутри — **чисто JavaScript-реализация протокола duck.ai**, включая солвер антибот-челленджа, который исполняет обфусцированный JS в самодельном моке браузера. Никаких ключей OpenAI, никаких оплат.
+
+> 📖 **Хочешь знать, как это работает под капотом?** На Хабре вышел большой разбор: [**«Headless-браузер без браузера: 5 408 байт»**](https://habr.com/ru/articles/1097568/) — реверс-инжиниринг антибот-защиты duck.ai, солвер челленджа x-vqd-hash-1 и самописный DOM-эмулятор, на котором стоит весь этот проект.
 
 ---
 
@@ -69,6 +72,15 @@ docker compose up -d --build
 ```
 
 Готово — открой бота в Телеграме и напиши `/start`. Логи: `docker compose logs -f`.
+
+Не хочешь клонировать и собирать? Есть готовый образ (собирается GitHub Actions на каждый тег `v*`):
+
+```bash
+# API-режим без токен-бота:
+docker run -d -p 8081:8080 -e API_KEY=secret ghcr.io/golaso024/headless-duckapi:latest node api.js
+# или бот:
+docker run -d -e BOT_TOKEN=123:ABC ghcr.io/golaso024/headless-duckapi:latest
+```
 
 ## Быстрый старт (нативно)
 
