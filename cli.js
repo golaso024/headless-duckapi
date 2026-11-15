@@ -21,7 +21,8 @@
 // Env: DUCK_CLI_OUT (default ./out) — directory for generated images.
 
 import { createInterface, emitKeypressEvents } from 'node:readline';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import * as duckai from './bot/lib/duckai.js';
 import { makeProxiedFetch, redactProxyUrl } from './bot/lib/proxyfetch.js';
@@ -78,10 +79,89 @@ const DUCK_ART = [
   '⠀⠀⠀⠉⠙⠛⠿⠶⣶⣶⣶⣶⣶⠶⠿⠟⠛⠉⠀⠀⠀⠀⠀⠀',
 ].join('\n');
 
+const WHATS_NEW = [
+  '/duo — two model families at once',
+  '/duomodel — pin the second model',
+  'Esc interrupts · typed lines queue up',
+  'PROXY_URL — WARP / any proxy for a clean IP',
+];
+
+const STATE_FILE = path.join(os.homedir(), '.duck-cli.json');
+function loadAppState() {
+  try { return JSON.parse(readFileSync(STATE_FILE, 'utf8')); } catch (e) { return { turns: 0, models: [], lastUsed: 0 }; }
+}
+function saveAppState(st) {
+  try { writeFileSync(STATE_FILE, JSON.stringify(st)); } catch (e) { /* cosmetic */ }
+}
+function relTime(ts) {
+  const d = Date.now() - ts;
+  if (d < 60000) return Math.max(1, Math.round(d / 1000)) + 'm ago';
+  if (d < 86400000) return Math.round(d / 3600000) + 'h ago';
+  return Math.round(d / 86400000) + 'd ago';
+}
+
+const plain = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, '');
+const padV = (s, w) => s + ' '.repeat(Math.max(0, w - plain(s).length));
+
 let rli = null; // active interactive readline (closed during the model picker)
 function ensureRl() {
   if (!rli) rli = createInterface({ input: process.stdin, output: process.stdout });
   return rli;
+}
+
+// ── Claude Code style welcome: dashed box, duck on the left, activity on
+// the right, plus a quack-bubble toggle animation on the art head row ──
+async function renderWelcomeBox() {
+  const cols = Math.min(termCols() - 2, 112);
+  const art = DUCK_ART.split('\n');
+  const lw = 44;
+  const rw = Math.min(64, Math.max(24, cols - lw - 8));
+  const st = loadAppState();
+  const used = (st.models || []).slice(-2);
+
+  const left = art.map((l) => yellow(l));
+  left.push('');
+  left.push(bold('Welcome back!'));
+  left.push(dim('model: ') + state.model + (state.proxyUrl ? dim(' · proxy') : ''));
+  left.push(dim('cwd: ' + process.cwd()));
+
+  const right = [cyan('Recent activity')];
+  if (st.turns) {
+    right.push(relTime(st.lastUsed) + '   ' + st.turns + ' turns');
+    if (used.length) right.push(dim(used.join(', ')));
+    right.push(dim('… /stats-like numbers in the bot'));
+  } else {
+    right.push(dim('first run — say hi!'));
+  }
+  right.push('');
+  right.push(cyan("What's new"));
+  for (const t of WHATS_NEW) right.push(t);
+  right.push(dim('… /help for more'));
+
+  const inner = Math.max(left.length, right.length);
+  while (left.length < inner) left.push('');
+  while (right.length < inner) right.push('');
+
+  const buildRow = (i, quack) => {
+    let l;
+    if (i === 0) l = quack ? yellow(art[0] + ' quack!') : yellow(art[0]);
+    else l = left[i] || '';
+    return '┊ ' + padV(l, lw) + '┊ ' + padV(right[i] || '', rw) + ' ┊';
+  };
+  const title = bold('duck.ai CLI v1.2.0');
+  const rowsArr = [];
+  rowsArr.push(dim('·─ ') + title + dim(' ' + '─'.repeat(Math.max(3, lw + rw + 6 - 22)) + '·'));
+  for (let i = 0; i < inner; i++) rowsArr.push(buildRow(i, false));
+  rowsArr.push(dim('·' + '─'.repeat(lw + rw + 8) + '·'));
+  console.log(rowsArr.join('\n'));
+
+  // quack toggle on the art head row (inner row index 0, above the beak)
+  const k = 0;
+  for (let t = 0; t < 4; t++) {
+    await new Promise((r) => setTimeout(r, 430));
+    const on = t % 2 === 0;
+    process.stdout.write('\x1b[' + (inner + 2 - k) + 'A\r\x1b[2K' + buildRow(k, on) + '\x1b[' + (inner + 1 - k) + 'B\r');
+  }
 }
 
 function banner() {
@@ -210,7 +290,40 @@ async function chatTurn(text) {
   const t0 = Date.now();
   let live = null;
   let stripTail = '';
+  const rawParts = [];   // stripped deltas, so an Esc-interrupt keeps the partial
+  const ac = new AbortController();
+  let interrupted = false;
+  const pending = [];    // lines typed while the answer streams (claude-code style queue)
+  let queueBuffer = '';
   const spin = spinner('duck is thinking');
+
+  // Raw input layer over the stream: Esc/Ctrl+C interrupts, typed characters
+  // queue a follow-up message, Enter submits it right after this answer.
+  // The interactive readline is closed for this window (close+resume is the
+  // proven pattern from the model picker) and recreated in restoreInput().
+  if (rli) { rli.close(); rli = null; process.stdin.resume(); }
+  emitKeypressEvents(process.stdin);
+  const wasRaw = process.stdin.isRaw;
+  process.stdin.setRawMode(true);
+  const onKey = (s, k) => {
+    if (!k) return;
+    if (k.name === 'escape' || (k.ctrl && k.name === 'c')) { interrupted = true; ac.abort(); return; }
+    if (k.name === 'backspace') { queueBuffer = queueBuffer.slice(0, -1); process.stdout.write('\b \b'); return; }
+    if (k.name === 'return') {
+      if (queueBuffer.trim()) { pending.push(queueBuffer.trim()); queueBuffer = ''; process.stdout.write('\n' + dim('  (queued)')); }
+      return;
+    }
+    if (k.ctrl || k.meta) return;
+    if (k.name === 'space') { queueBuffer += ' '; process.stdout.write(dim(' ')); return; }
+    if (k.name && k.name.length > 1) return; // arrows, tab, function keys…
+    if (s && s.length === 1) { queueBuffer += s; process.stdout.write(dim(s)); }
+  };
+  process.stdin.on('keypress', onKey);
+  const restoreInput = () => {
+    process.stdin.removeListener('keypress', onKey);
+    process.stdin.setRawMode(wasRaw || false);
+    ensureRl();
+  };
 
   const stripStream = (chunk) => {
     let s = stripTail + chunk;
@@ -224,35 +337,64 @@ async function chatTurn(text) {
     return s;
   };
 
+  let full = '';
+  let failed = null;
   try {
     const out = await duckai.chat({
       model: state.model, effort: state.effort, webSearch: state.web,
       messages: buildMessages(text),
       fetchFn: state.fetchFn,
+      signal: ac.signal,
       onDelta: (d) => {
         const s = stripStream(d);
         if (!s) return;
+        rawParts.push(s);
         if (!live) { spin.stop(); live = new LiveBlock(); }
         live.write(s);
       },
     });
     spin.stop();
-    const full = String(typeof out === 'string' ? out : out && out.text || '');
+    full = String(typeof out === 'string' ? out : out && out.text || '') || rawParts.join('');
     const rendered = renderMd(full, isTTY);
     if (live) live.clear();
     if (rendered) console.log(rendered);
-    const sec = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(dim('· ' + state.model + (state.web ? ' + web' : '') + (state.proxyUrl ? ' · proxy' : '') + ' · ' + sec + 's'));
-    return full;
   } catch (e) {
     spin.stop();
     if (live) live.clear();
+    failed = e;
+    full = rawParts.join('');
     const msg = String((e && e.description) || (e && e.message) || e);
-    console.log('chat failed: ' + msg.slice(0, 200));
-    if (/429|limit/i.test(msg)) console.log(dim('duck.ai quota for this IP is spent — try later or set a proxy'));
-    if (/RESTRICTED/i.test(msg)) console.log(dim('this model is closed for anonymous use — /model to pick another'));
-    return '';
+    if (/abort/i.test(msg) || interrupted) {
+      const rendered = renderMd(full, isTTY);
+      if (rendered) console.log(rendered);
+      console.log(dim('· interrupted by Esc — partial answer above'));
+    } else {
+      if (full) console.log(renderMd(full, isTTY));
+      console.log('chat failed: ' + msg.slice(0, 200));
+      if (/429|limit/i.test(msg)) console.log(dim('duck.ai quota for this IP is spent — wait a few minutes or set a proxy'));
+      if (/RESTRICTED/i.test(msg)) console.log(dim('this model is closed for anonymous use — /model to pick another'));
+    }
+  } finally {
+    restoreInput();
   }
+  const sec = ((Date.now() - t0) / 1000).toFixed(1);
+  console.log(dim('· ' + state.model + (state.web ? ' + web' : '') + (state.proxyUrl ? ' · proxy' : '') + (interrupted ? ' · interrupted' : '') + ' · ' + sec + 's'));
+  if (full && !failed) {
+    state.history.push({ role: 'user', content: text });
+    state.history.push({ role: 'assistant', content: full.slice(0, 8000) });
+    const st = loadAppState();
+    st.turns = (st.turns || 0) + 1;
+    st.models = [...new Set([state.model].concat(st.models || []))].slice(0, 4);
+    st.lastUsed = Date.now();
+    saveAppState(st);
+  }
+  // lines queued during the stream run right after the answer
+  for (const q of pending) {
+    console.log(dim('» ' + q));
+    const stop = await handle(q);
+    if (stop) process.exit(0);
+  }
+  return interrupted ? '' : full;
 }
 
 async function chatTurnPiped(text) {
@@ -321,6 +463,7 @@ const HELP = dim([
   '/img <prompt>     generate an image into ' + OUT_DIR,
   '/duo <question>   one question, two model families, two answers',
   '/duomodel [id|auto]  pick the second /duo model (auto = opposite family)',
+  'Esc              interrupt the current answer · typed lines are queued',
   '/reset            clear conversation history',
   '/help             this list',
   '/exit             quit',
@@ -509,10 +652,6 @@ async function handle(line) {
     return false;
   }
   const full = await turn()(text);
-  if (full) {
-    state.history.push({ role: 'user', content: text });
-    state.history.push({ role: 'assistant', content: full });
-  }
   return false;
 }
 
@@ -537,7 +676,7 @@ async function main() {
     // errors fail the request — there is no direct-connection fallback.
     state.fetchFn = await makeProxiedFetch(state.proxyUrl);
   }
-  banner();
+  if (isTTY) await renderWelcomeBox(); else banner();
   if (!isTTY) {
     // piped mode: scripted testing. Lines are processed strictly one by one
     // (a promise chain). EOF must not kill anything: exit happens only when

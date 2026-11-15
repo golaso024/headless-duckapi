@@ -158,9 +158,23 @@ node cli.js --web                 # start with duck.ai WebSearch on
 node cli.js --proxy socks5://127.0.0.1:40000   # route duck.ai through a proxy
 ```
 
-Commands: `/model` (live list; ↑/↓ + Enter in a terminal, or `/model 2` by number), `/web [on|off]`, `/effort`, `/img <prompt>` (saves the image into `./out`), `/duo <question>`, `/reset`, `/help`, `/exit`.
+Commands: `/model` (live list; ↑/↓ + Enter in a terminal, or `/model 2` by number), `/web [on|off]`, `/effort`, `/img <prompt>` (saves the image into `./out`), `/duo <question>`, `/duomodel [id|auto]` (pin the second model), `/reset`, `/help`, `/exit`.
+
+Extras: `Esc` interrupts the current answer (the partial stays rendered), and typed lines **queue up** while the answer streams — they run right after it.
 
 `/duo` asks **two model families at once** (your current one plus the opposite camp: GPT ↔ Claude) and prints both answers side by side — the same idea as duck.ai's own "2nd Opinion" button, and both calls share one challenge solve.
+
+## Discord (`discord.js`)
+
+The same engine behind a real Discord bot account — zero dependencies beyond the engine (gateway WebSocket + REST; Node ≥ 22 for the built-in WebSocket):
+
+```bash
+DISCORD_BOT_TOKEN=… DISCORD_CLIENT_ID=… node discord.js
+```
+
+- DMs and @mentions answer with per-channel history; `/ask`, `/duo`, `/models` slash commands are registered automatically
+- setup: create the application + bot in the Discord developer portal, enable the **MESSAGE CONTENT** intent (privileged), invite the bot with the `bot` scope, put the token and application id into the env vars above
+- Discord ToS: bot accounts only, never user-account automation
 
 ## Proxy (`PROXY_URL`)
 

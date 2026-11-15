@@ -181,6 +181,19 @@ PROXY_URL=socks5://127.0.0.1:40000 node cli.js
 
 Fail-closed по дизайну: ошибка прокси роняет запрос — **молчаливого фолбэка на прямое соединение нет**, DNS для duck.ai резолвит прокси, креды прокси в логи не пишутся.
 
+## Discord (`discord.js`)
+
+Тот же движок за настоящим Discord-бот-аккаунтом — ноль зависимостей помимо движка (gateway WebSocket + REST; нужен Node ≥ 22 ради встроенного WebSocket):
+
+```bash
+DISCORD_BOT_TOKEN=… DISCORD_CLIENT_ID=… node discord.js
+```
+
+- ЛС и @упоминания отвечают с per-channel историей; слэш-команды `/ask`, `/duo`, `/models` регистрируются автоматически
+- настройка: создай приложение + бота в Discord developer portal, включи интент **MESSAGE CONTENT** (привилегированный), пригласи бота со scope `bot`, токен и application id — в переменные выше
+- Discord ToS: только бот-аккаунты, автоматизация юзер-аккаунтов запрещена
+
+## Конфигурация (`.env`)
 ## Конфигурация (`.env`)
 
 | Переменная | Нужна | Что делает |
@@ -195,6 +208,8 @@ Fail-closed по дизайну: ошибка прокси роняет запр
 | `API_KEYS` | — | Несколько Bearer-ключей через запятую (`API_KEYS=k1,k2`); у каждого свой бакет лимита |
 | `RATE_LIMIT_RPM` | — | Запросов в минуту на ключ для API (по умолчанию `30`, `0` выключает). Превышение → HTTP 429 + `Retry-After` |
 | `PROXY_URL` | — | Форвард-прокси для ВСЕГО трафика к duck.ai: `http(s)://` (CONNECT) или `socks5://` (WARP: `socks5://127.0.0.1:40000`). Fail-closed, без прямого фолбэка |
+| `DISCORD_BOT_TOKEN` | — | Токен бота Discord (discord.com/developers → Bot). Задан → `node discord.js` поднимает Discord-бота |
+| `DISCORD_CLIENT_ID` | — | Application id из developer portal (для регистрации slash-команд `/ask` `/duo` `/models`) |
 
 ### Mini App по HTTPS (опционально)
 
