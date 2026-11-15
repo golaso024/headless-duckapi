@@ -58,6 +58,8 @@ const HELP = [
   '/reset — очистить историю диалога',
   '/settings — настройки',
   '/stats — статистика бота (только для владельца)',
+  '/duo <вопрос> — 🎯 мнение двух ИИ сразу (GPT + Claude, как 2nd Opinion в duck.ai)',
+  '/duomodel <имя|auto> — выбрать вторую модель для /duo',
   '',
   'Просто пиши текст — ответ стримится в живую. Можно кидать <b>фото</b> (с подписью или без).',
   'Картинки — <code>/img утёнок-космонавт</code> 🎨',
@@ -183,6 +185,115 @@ async function cmdStats(chatId, from) {
   }
   const s = await renderStats();
   await api.sendMessage({ chat_id: chatId, text: s, parse_mode: 'HTML' });
+}
+
+// ---------------------------------------------------------------------------
+// /duo — "2nd Opinion": one question, two model families, two answers.
+// duck.ai ships this in its own web UI (the "2nd Opinion" button); here it
+// is two parallel chat() calls. Both share one challenge token (single-
+// flight in getToken) and do NOT touch the conversation history: the duo
+// round is a side-channel, the main chat stays clean.
+// ---------------------------------------------------------------------------
+async function cmdDuo(msg, row, uid, arg) {
+  const chatId = msg.chat.id;
+  const q = (arg || '').trim();
+  if (q.length < 2) {
+    await api.sendMessage({
+      chat_id: chatId,
+      text: '🎯 Мнение двух ИИ: задай вопрос после команды.\n<code>/duo Чем мыть газовую плиту?</code>',
+      parse_mode: 'HTML',
+    });
+    return;
+  }
+
+  // Pair: the chat's model + the opposite family. A per-chat /duomodel
+  // choice (config kv) overrides the auto pick; everything is resolved
+  // against the live list so a duck.ai rename (haiku 4.5 → 5.5) doesn't
+  // break the feature.
+  let duoCfg = null;
+  try {
+    const r = await db.select().from(config).where(eq(config.key, 'duo_model:' + chatId)).get();
+    duoCfg = (r && r.value) || null;
+  } catch (e) { /* config must never break the bot */ }
+  const isClaude = /claude/.test(row.model);
+  const family = isClaude ? 'gpt-6' : 'claude';
+  let pair = [row.model, null];
+  try {
+    const ids = (await listModels(sdkFetch)).filter((m) => m && m.free !== false).map((m) => m.id);
+    if (!ids.includes(pair[0])) pair[0] = ids.find((id) => id.startsWith(isClaude ? 'claude' : 'gpt-6')) || pair[0];
+    pair[1] = (duoCfg && ids.includes(duoCfg) && duoCfg !== pair[0])
+      ? duoCfg
+      : ids.find((id) => id.startsWith(family)) || null;
+  } catch (e) { /* live list unreachable — fallback ids below */ }
+  if (!pair[0]) pair[0] = isClaude ? 'claude-haiku-5-5' : 'gpt-6-luna';
+  if (!pair[1]) pair[1] = isClaude ? 'gpt-6-luna' : 'claude-haiku-5-5';
+
+  // Same context as a normal chat turn, but the question itself is not
+  // saved: history stays as-is, both models see the same payload.
+  const history = (await db.select({ role: messages.role, content: messages.content }).from(messages)
+    .where(eq(messages.chatId, chatId))
+    .orderBy(desc(messages.id))
+    .limit(HISTORY_LIMIT).all()).reverse();
+  const payload = buildMessages(history.concat([{ role: 'user', content: q }]), [{ type: 'text', text: q }]);
+
+  await api.sendMessage({
+    chat_id: chatId,
+    text: '🎯 Спрашиваю два ИИ: <b>' + escHtml(modelName(pair[0])) + '</b> и <b>' + escHtml(modelName(pair[1])) + '</b>',
+    parse_mode: 'HTML',
+  });
+  api.sendChatAction({ chat_id: chatId, action: 'typing' }).catch(() => {});
+
+  // Two streams in parallel, one quota hit for the challenge (single-flight).
+  const r1 = new StreamReply(chatId);
+  const r2 = new StreamReply(chatId);
+  const runOne = async (model, reply) => {
+    try {
+      const out = await duckChat({
+        model, effort: row.effort, webSearch: row.webSearch,
+        messages: payload,
+        fetchFn: sdkFetch, store: duckStore, stats: makeDuckStats(),
+        onDelta: (d, f) => reply.push(d, f),
+      });
+      const full = typeof out === 'string' ? out : (out && out.text) || '';
+      await reply.finish(full, '🎯 ' + modelName(model));
+      if (uid) { await bumpDaily(uid, 'msgsOut'); await bumpModel(uid, model); }
+    } catch (e) {
+      console.error('[duo]', model, 'failed:', e);
+      if (uid) await bumpDaily(uid, 'errors');
+      await reply.fail(e);
+    }
+  };
+  await Promise.all([runOne(pair[0], r1), runOne(pair[1], r2)]);
+}
+
+// /duomodel <имя|auto> — фиксирует вторую модель для /duo (config kv,
+// без миграций). auto / без аргумента с "auto" — вернуть авто-подбор.
+async function cmdDuoModel(chatId, arg) {
+  const raw = (arg || '').trim().toLowerCase().replace(/^tinfoil\//, '');
+  if (!raw || raw === 'auto') {
+    await db.delete(config).where(eq(config.key, 'duo_model:' + chatId)).run();
+    await api.sendMessage({ chat_id: chatId, text: '🎯 Вторая модель /duo: <b>авто</b> (противоположное семейство)', parse_mode: 'HTML' });
+    return;
+  }
+  let id = ALIASES[raw] || null;
+  if (!id) {
+    try {
+      const models = await listModels(sdkFetch);
+      const found = models.find((m) => m.id.toLowerCase() === raw || m.id.toLowerCase().endsWith('/' + raw));
+      id = found ? found.id : null;
+    } catch (e) { id = null; }
+  }
+  if (!id) {
+    await api.sendMessage({ chat_id: chatId, text: 'Не знаю модель «' + escHtml(arg) + '». Глянь список: /models (сброс: <code>/duomodel auto</code>)' });
+    return;
+  }
+  await db.delete(config).where(eq(config.key, 'duo_model:' + chatId)).run();
+  await db.insert(config).values({ key: 'duo_model:' + chatId, value: id }).run();
+  await api.sendMessage({
+    chat_id: chatId,
+    text: '🎯 Вторая модель /duo: <b>' + escHtml(modelName(id)) + '</b> (сбросить: <code>/duomodel auto</code>)',
+    parse_mode: 'HTML',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +627,12 @@ export default async function (msg) {
         break;
       case 'stats':
         await cmdStats(chatId, msg.from);
+        break;
+      case 'duo':
+        await cmdDuo(msg, row, uid, arg);
+        break;
+      case 'duomodel':
+        await cmdDuoModel(chatId, arg);
         break;
       default:
         await api.sendMessage({ chat_id: chatId, text: 'Не знаю такую команду — /help' });

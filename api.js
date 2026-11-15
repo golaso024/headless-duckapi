@@ -32,6 +32,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as duckai from './bot/lib/duckai.js';
+import { makeProxiedFetch, redactProxyUrl } from './bot/lib/proxyfetch.js';
 import { sniffImageMime, jpegToPngDataUrl } from './bot/lib/imgconv.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -91,10 +92,10 @@ function estimateTokens(s) {
   return Math.ceil(String(s || '').length / 4);
 }
 
-function authOk(req, apiKey) {
-  if (!apiKey) return true;
+function authOk(req, apiKeys) {
+  if (!apiKeys.length) return true; // open server (no keys configured)
   const m = String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i);
-  return !!m && m[1].trim() === apiKey;
+  return !!m && apiKeys.includes(m[1].trim());
 }
 
 function cors(res) {
@@ -462,6 +463,25 @@ function upstreamError(res, e, status) {
 
 export function startApiServer(opts = {}) {
   const apiKey = opts.apiKey !== undefined ? opts.apiKey : (process.env.API_KEY || '');
+  // Multi-key: API_KEYS=k1,k2 (each key gets its own rate-limit bucket);
+  // single API_KEY keeps working as a one-element list.
+  const apiKeys = String(opts.apiKeys !== undefined ? opts.apiKeys : (process.env.API_KEYS || apiKey || ''))
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  // Per-key token bucket, requests per minute. RATE_LIMIT_RPM=0 disables.
+  // Only applies to authenticated keys: an open server is not limited.
+  const rpm = parseInt(process.env.RATE_LIMIT_RPM || '30', 10);
+  const buckets = new Map(); // key → { tokens, last }
+  const limiter = (key) => {
+    if (!rpm || rpm <= 0 || !apiKeys.length || !key) return 0; // 0s = allowed
+    const now = Date.now();
+    const b = buckets.get(key) || { tokens: rpm, last: now };
+    b.tokens = Math.min(rpm, b.tokens + Math.floor(((now - b.last) / 60000) * rpm));
+    if (b.tokens <= 0) { buckets.set(key, b); return Math.max(1, Math.ceil(60 / rpm)); }
+    b.tokens -= 1;
+    b.last = now;
+    buckets.set(key, b);
+    return 0;
+  };
   const fetchFn = opts.fetchFn;
   const store = opts.store !== undefined ? opts.store : null;
   const chat = opts.chat || ((p) => duckai.chat(p));
@@ -480,9 +500,16 @@ export function startApiServer(opts = {}) {
       log('[api]', req.method, pathname, status, (Date.now() - t0) + 'ms');
 
     try {
-      if (!authOk(req, apiKey)) {
+      if (!authOk(req, apiKeys)) {
         done(401);
         return sendError(res, 401, 'invalid API key (set Authorization: Bearer <API_KEY>, or unset API_KEY on the server)', 'authentication_error');
+      }
+      const bearer = (String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i) || [])[1];
+      const retryAfter = limiter(bearer ? bearer.trim() : null);
+      if (retryAfter > 0) {
+        done(429);
+        res.setHeader('retry-after', String(retryAfter));
+        return sendError(res, 429, 'rate limit exceeded for this key — retry in ' + retryAfter + 's', 'rate_limit_error');
       }
 
       if (pathname === '/' || pathname === '/health') {
@@ -493,7 +520,7 @@ export function startApiServer(opts = {}) {
           mode: 'api',
           uptime_s: Math.floor((Date.now() - startedAt) / 1000),
           endpoints: ['/v1/models', '/v1/chat/completions'],
-          auth: apiKey ? 'bearer' : 'open',
+          auth: apiKeys.length ? 'bearer' : 'open',
         });
       }
 
@@ -541,7 +568,15 @@ async function main() {
   if (cmd && cmd !== 'run') throw new Error('unknown command: ' + cmd + ' (use: node api.js [models|run])');
 
   const port = parseInt(process.env.PORT || '8080', 10) || 8080;
-  await startApiServer({ port });
+  // PROXY_URL: route ALL duck.ai traffic through a forward proxy
+  // (http://, https:// or socks5:// for Cloudflare WARP: warp-cli proxy
+  // start → socks5://127.0.0.1:40000). Fail-closed: no direct fallback.
+  let fetchFn;
+  if (process.env.PROXY_URL) {
+    fetchFn = await makeProxiedFetch(process.env.PROXY_URL);
+    log('[api] duck.ai traffic via proxy: ' + redactProxyUrl(process.env.PROXY_URL));
+  }
+  await startApiServer({ port, fetchFn });
   log('duck.ai OpenAI-compatible API listening on http://0.0.0.0:' + port +
     (process.env.API_KEY ? ' (API_KEY: required)' : ' (API_KEY: not set — open to anyone with network access)'));
   log('POST /v1/chat/completions · GET /v1/models · GET /health — Ctrl+C to stop');

@@ -750,6 +750,8 @@ export async function getFeVersion(fetchFn, opts = {}) {
   return meta.feVersion;
 }
 
+let inflightToken = null; // single-flight: concurrent callers share one challenge solve
+
 export async function getToken(fetchFn, opts = {}) {
   const f = fetchFn || fetch;
   const store = opts.store || null;
@@ -757,15 +759,26 @@ export async function getToken(fetchFn, opts = {}) {
   const stored = await fromStore(store, 'duckai_token', TOKEN_TTL_MS);
   if (stored) { cachedToken = { value: stored, ts: Date.now() }; return stored; }
 
-  const headers = Object.assign({}, baseHeaders(), { accept: '*/*', 'x-vqd-accept': '1' });
-  const res = await f(ORIGIN + '/duckchat/v1/status', { method: 'GET', headers });
-  const challenge = res.headers.get('x-vqd-hash-1');
-  if (!challenge) throw new Error('status: no x-vqd-hash-1 header (HTTP ' + res.status + ')');
-  const { token, fallback } = await solveChallenge(challenge, { ua: UA, stack: opts.stack || STACK });
-  console.log('[duckai] challenge solved, fallback=' + fallback);
-  cachedToken = { value: token, ts: Date.now() };
-  await toStore(store, 'duckai_token', token);
-  return token;
+  // One /duckchat/v1/status hit per burst, not N: /duo fires two chats in
+  // parallel, api.js serves whoever calls it — without this the 429 window
+  // burns on the first burst of cold requests.
+  if (inflightToken) return inflightToken;
+  inflightToken = (async () => {
+    const headers = Object.assign({}, baseHeaders(), { accept: '*/*', 'x-vqd-accept': '1' });
+    const res = await f(ORIGIN + '/duckchat/v1/status', { method: 'GET', headers });
+    const challenge = res.headers.get('x-vqd-hash-1');
+    if (!challenge) throw new Error('status: no x-vqd-hash-1 header (HTTP ' + res.status + ')');
+    const { token, fallback } = await solveChallenge(challenge, { ua: UA, stack: opts.stack || STACK });
+    console.log('[duckai] challenge solved, fallback=' + fallback);
+    cachedToken = { value: token, ts: Date.now() };
+    await toStore(store, 'duckai_token', token);
+    return token;
+  })();
+  try {
+    return await inflightToken;
+  } finally {
+    inflightToken = null;
+  }
 }
 
 // ----------------------------------------------------------------------------

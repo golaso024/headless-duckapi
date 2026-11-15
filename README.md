@@ -62,7 +62,7 @@ Streaming answers · GPT / Claude / Mistral · image generation · photo vision 
 ## Quick start (Docker)
 
 ```bash
-git clone https://github.com/<your-username>/headless-duckapi.git && cd headless-duckapi
+git clone https://github.com/golaso024/headless-duckapi.git && cd headless-duckapi
 cp .env.example .env          # then put your bot token into .env
 docker compose up -d --build
 ```
@@ -145,6 +145,38 @@ Extensions beyond the OpenAI schema, all optional:
 
 Set `API_KEY` (in `.env` for the Docker profile — compose picks it up automatically — or in the environment) to require `Authorization: Bearer <API_KEY>`; leave it empty only on a trusted network.
 
+Multiple keys are supported too: `API_KEYS=k1,k2,k3` — each key gets its own rate-limit bucket (`RATE_LIMIT_RPM`, default 30/min; exceeding returns HTTP 429 with `Retry-After`). This is what lets you share the API without letting one client burn the shared duck.ai quota for everyone.
+
+## Terminal CLI (`cli.js`)
+
+The third face of the same engine: an interactive chat in your terminal. Same models, same streaming, same antibot solver — no Telegram, no HTTP server:
+
+```bash
+node cli.js                       # default model
+node cli.js --model haiku         # start with another model (alias or id)
+node cli.js --web                 # start with duck.ai WebSearch on
+node cli.js --proxy socks5://127.0.0.1:40000   # route duck.ai through a proxy
+```
+
+Commands: `/model` (live list; ↑/↓ + Enter in a terminal, or `/model 2` by number), `/web [on|off]`, `/effort`, `/img <prompt>` (saves the image into `./out`), `/duo <question>`, `/reset`, `/help`, `/exit`.
+
+`/duo` asks **two model families at once** (your current one plus the opposite camp: GPT ↔ Claude) and prints both answers side by side — the same idea as duck.ai's own "2nd Opinion" button, and both calls share one challenge solve.
+
+## Proxy (`PROXY_URL`)
+
+duck.ai judges you by IP, and datacenter ranges are the first suspects. `PROXY_URL` routes **every** duck.ai request through a forward proxy (works in `cli.js` via `--proxy`/env and in `api.js` via env; Telegram bot traffic is untouched):
+
+```bash
+# any HTTP(S) forward proxy (CONNECT tunneling):
+PROXY_URL=http://proxy.example.com:8080 node cli.js
+
+# Cloudflare WARP in proxy mode:
+warp-cli proxy start             # serves SOCKS5 on 127.0.0.1:40000
+PROXY_URL=socks5://127.0.0.1:40000 node cli.js
+```
+
+Fail-closed by design: a proxy failure fails the request — there is **no silent direct-connection fallback**, DNS for duck.ai is resolved by the proxy, and proxy credentials are never written to logs.
+
 ## Configuration (`.env`)
 
 | Variable | Required | Description |
@@ -156,6 +188,9 @@ Set `API_KEY` (in `.env` for the Docker profile — compose picks it up automati
 | `DATA_DIR` | — | SQLite storage directory (default `./data`) |
 | `API_PORT` | — | Host port for the API container (docker compose, `headless-duckapi-api` service; default `8081`) |
 | `API_KEY` | — | Bearer token for the API mode (`api.js`): clients send `Authorization: Bearer <API_KEY>`. Empty = open server |
+| `API_KEYS` | — | Multiple bearer keys, comma-separated (`API_KEYS=k1,k2`); each gets its own rate-limit bucket |
+| `RATE_LIMIT_RPM` | — | Per-key requests per minute for the API (default `30`, `0` disables). Over the limit → HTTP 429 + `Retry-After` |
+| `PROXY_URL` | — | Forward proxy for ALL duck.ai traffic: `http(s)://` (CONNECT) or `socks5://` (WARP: `socks5://127.0.0.1:40000`). Fail-closed, no direct fallback |
 
 ### Mini App over HTTPS (optional)
 

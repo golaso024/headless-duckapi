@@ -66,7 +66,7 @@
 ## Быстрый старт (Docker)
 
 ```bash
-git clone https://github.com/<your-username>/headless-duckapi.git && cd headless-duckapi
+git clone https://github.com/golaso024/headless-duckapi.git && cd headless-duckapi
 cp .env.example .env          # впиши токен бота в .env
 docker compose up -d --build
 ```
@@ -87,7 +87,7 @@ docker run -d -e BOT_TOKEN=123:ABC ghcr.io/golaso024/headless-duckapi:latest
 Node.js **≥ 22.5** (рекомендую 24 — SQLite встроена, поэтому `npm install` ставит ноль зависимостей):
 
 ```bash
-git clone https://github.com/<your-username>/headless-duckapi.git && cd headless-duckapi
+git clone https://github.com/golaso024/headless-duckapi.git && cd headless-duckapi
 npm install
 cp .env.example .env          # впиши токен бота в .env
 node app.js
@@ -149,6 +149,38 @@ curl http://localhost:8081/v1/chat/completions \
 
 Задай `API_KEY` (в `.env` — compose подхватит сам — или в переменных окружения), чтобы требовать `Authorization: Bearer <API_KEY>`; пустое значение оставляй только в доверенной сети.
 
+Несколько ключей сразу: `API_KEYS=k1,k2,k3` — у каждого свой бакет рейт-лимита (`RATE_LIMIT_RPM`, по умолчанию 30/мин; превышение вернёт HTTP 429 с `Retry-After`). Это способ делиться API, не давая одному клиенту сжечь общую квоту duck.ai.
+
+## CLI в терминале (`cli.js`)
+
+Третье лицо того же движка: интерактивный чат прямо в терминале. Те же модели, тот же стриминг, тот же солвер антибота — без Telegram и без HTTP-сервера:
+
+```bash
+node cli.js                       # модель по умолчанию
+node cli.js --model haiku         # старт с другой моделью (алиас или id)
+node cli.js --web                 # старт с включённым веб-поиском
+node cli.js --proxy socks5://127.0.0.1:40000   # duck.ai через прокси
+```
+
+Команды: `/model` (живой список; в терминале ↑/↓ + Enter, или `/model 2` по номеру), `/web [on|off]`, `/effort`, `/img <prompt>` (картинка сохраняется в `./out`), `/duo <вопрос>`, `/reset`, `/help`, `/exit`.
+
+`/duo` задаёт вопрос **двум семействам моделей сразу** (твоя текущая плюс противоположный лагерь: GPT ↔ Claude) и печатает оба ответа — та же идея, что и кнопка «2nd Opinion» в самом duck.ai, и оба вызова делят одно решение челленджа.
+
+## Прокси (`PROXY_URL`)
+
+duck.ai судит по IP, и датацентровые диапазоны подозревают первыми. `PROXY_URL` заворачивает **весь** трафик к duck.ai через форвард-прокси (работает в `cli.js` через `--proxy`/env и в `api.js` через env; трафик Telegram-бота не трогается):
+
+```bash
+# любой HTTP(S) форвард-прокси (CONNECT-туннель):
+PROXY_URL=http://proxy.example.com:8080 node cli.js
+
+# Cloudflare WARP в режиме прокси:
+warp-cli proxy start             # поднимает SOCKS5 на 127.0.0.1:40000
+PROXY_URL=socks5://127.0.0.1:40000 node cli.js
+```
+
+Fail-closed по дизайну: ошибка прокси роняет запрос — **молчаливого фолбэка на прямое соединение нет**, DNS для duck.ai резолвит прокси, креды прокси в логи не пишутся.
+
 ## Конфигурация (`.env`)
 
 | Переменная | Нужна | Что делает |
@@ -160,6 +192,9 @@ curl http://localhost:8081/v1/chat/completions \
 | `DATA_DIR` | — | Папка SQLite-хранилища (по умолчанию `./data`) |
 | `API_PORT` | — | Хост-порт контейнера API (docker compose, сервис `headless-duckapi-api`; по умолчанию `8081`) |
 | `API_KEY` | — | Bearer-токен для API-режима (`api.js`): клиенты шлют `Authorization: Bearer <API_KEY>`. Пусто = открытый сервер |
+| `API_KEYS` | — | Несколько Bearer-ключей через запятую (`API_KEYS=k1,k2`); у каждого свой бакет лимита |
+| `RATE_LIMIT_RPM` | — | Запросов в минуту на ключ для API (по умолчанию `30`, `0` выключает). Превышение → HTTP 429 + `Retry-After` |
+| `PROXY_URL` | — | Форвард-прокси для ВСЕГО трафика к duck.ai: `http(s)://` (CONNECT) или `socks5://` (WARP: `socks5://127.0.0.1:40000`). Fail-closed, без прямого фолбэка |
 
 ### Mini App по HTTPS (опционально)
 
