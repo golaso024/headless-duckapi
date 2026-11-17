@@ -1,0 +1,97 @@
+name: 🐛 API / bot returns errors
+description: 4xx/5xx from api.js, cli.js, discord.js or the Telegram bot
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Fingerprint your error first.** The response body decides where the problem lives:
+
+        - clean JSON like `{"error":{"message":"…","type":"…"}}` → our layer, fill this form
+        - HTML page with `cf-ray` in the headers → Cloudflare edge in front of YOUR host
+        - HTML `<center>nginx</center>` → a reverse proxy in front of api.js
+        - your host's branded error page → your hosting (app asleep, edge limits, egress blocked)
+
+        Also run `GET /health` on the same instance: 200 means the host is alive and the issue is in the duck.ai layer; non-200 means your host/edge.
+
+        **Never paste BOT_TOKEN / API_KEY / DISCORD_BOT_TOKEN / PROXY_URL credentials. Redact everything.**
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker, pulled ghcr.io image (docker pull …)
+        - Docker, built locally
+        - Bare Node (node api.js / node cli.js / node discord.js)
+        - Telegram Serverless (tgcloud)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or image tag
+      description: 'For example: 1.2.0, ghcr tag 1.2, or a commit sha'
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: What is failing
+      options:
+        - 'POST /v1/chat/completions'
+        - 'GET /v1/models'
+        - 'GET /health'
+        - 'cli.js'
+        - 'discord.js'
+        - 'Telegram bot'
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: HTTP status you see
+      options:
+        - '429'
+        - '503'
+        - '504'
+        - '502'
+        - '401'
+        - '400'
+        - 'other / no response at all'
+    validations:
+      required: true
+  - type: dropdown
+    id: egress
+    attributes:
+      label: Egress IP type of the machine running the code
+      description: Where this machine exits to the internet
+      options:
+        - Datacenter VPS / cloud
+        - Free hosting (Render, Railway, Replit, …)
+        - Home / residential IP
+        - Through a proxy or WARP
+        - Unknown
+    validations:
+      required: true
+  - type: input
+    id: error_type
+    attributes:
+      label: error.type from the JSON body (only if the body was JSON)
+      description: 'Examples: rate_limit_error, api_error, authentication_error'
+  - type: textarea
+    id: body
+    attributes:
+      label: Full response body or console output
+      description: 'Redact keys. Include the [duckai] console lines if present — they name the failing stage.'
+      placeholder: |
+        {"error":{"message":"duck.ai is rate-limiting this IP …","type":"rate_limit_error"}}
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: GET /health returns 200 on this instance
+        - label: The failing response body is clean JSON from api.js (not an HTML page)
+        - label: The same request worked earlier on this machine
+        - label: I run no proxy (PROXY_URL / --proxy unset)
+        - label: I did not paste any tokens or keys

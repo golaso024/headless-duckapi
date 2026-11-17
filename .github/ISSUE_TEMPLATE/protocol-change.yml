@@ -1,0 +1,55 @@
+name: 🧠 duck.ai protocol change
+description: The engine fails on every network (challenge, token, models, chat)
+labels: ['protocol']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this ONLY when the engine fails on **every** network, including a
+        residential/home IP. IP rate limiting (HTTP 429) is NOT a protocol
+        change: it self-heals in minutes. A protocol change looks like:
+        the challenge/token/models/chat stage fails identically on a clean
+        datacenter IP, on a home IP and through a proxy.
+
+        **Never paste solved tokens or credentials. The challenge JS blob is
+        huge: link a paste instead of pasting it.**
+  - type: input
+    id: fe
+    attributes:
+      label: fe-version string from the duck.ai homepage
+      description: 'Looks like: serp_20261117_101827_ET-2d8d81b4c92ce336 (getFeVersion prints it; also visible in [duckai] logs)'
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage fails
+      options:
+        - 'GET /duckchat/v1/status (no x-vqd-hash-1 header / unexpected status)'
+        - 'challenge solve / token'
+        - 'POST /duckchat/v1/chat'
+        - 'GET /duckchat/v1/models'
+        - 'everything above'
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: It fails on which networks
+      options:
+        - datacenter IP only
+        - home / residential IP too
+        - through WARP / proxy too
+        - everywhere I can test
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: '[duckai] console lines'
+      description: 'The engine prints the failing stage and HTTP code. No tokens in these lines.'
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: 'Decoded challenge JS is large: use a paste service link.'
