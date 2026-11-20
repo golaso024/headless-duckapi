@@ -136,14 +136,14 @@ curl http://localhost:8081/v1/chat/completions \
 
 - устаревшие id моделей (`gpt-4o-mini`, `claude-3-haiku`, …) под капотом маппятся на ближайшую актуальную модель duck.ai — истина в `GET /v1/models`;
 - `content` может быть массивом частей: `{type:"text"}` и `{type:"image_url"}` (data: или http(s)-URL; JPEG перекодируется в PNG на чистом JS — duck.ai JPEG-части не принимает);
-- `role: "developer"` маппится в `system`;
+- `system` и `role: "developer"` склеиваются с первым user-сообщением — duck.ai `system` не принимает вообще (HTTP 400), поэтому промпт сохраняется, но уходит как user-turn;
 - `temperature`, `max_tokens` и прочее принимается и игнорируется — у duck.ai таких ручек нет.
 
 Расширения поверх схемы OpenAI, все опциональные:
 
 | Поле | Что делает |
 |---|---|
-| `reasoning_effort: "none" / "low" / "medium"` | reasoning effort duck.ai (валидируется по модели — получишь внятный 400 вместо невнятного от duck.ai) |
+| `reasoning_effort: "none" / "low" / "medium"` | reasoning effort duck.ai (валидируется по модели — получишь внятный 400 вместо невнятного от duck.ai). Не указан → берётся дефолт модели (`none`, если модель его поддерживает, `low` для `tinfoil/gpt-oss-120b`) |
 | `web_search: true` | тул WebSearch duck.ai |
 | `image: true` | тул GenerateImage duck.ai — в ответе появится `message.images: ["data:image/…;base64,…"]` (работает на GPT-моделях; дефолт `/img` у бота — `gpt-6-luna`) |
 
@@ -193,7 +193,6 @@ DISCORD_BOT_TOKEN=… DISCORD_CLIENT_ID=… node discord.js
 - настройка: создай приложение + бота в Discord developer portal, включи интент **MESSAGE CONTENT** (привилегированный), пригласи бота со scope `bot`, токен и application id — в переменные выше
 - Discord ToS: только бот-аккаунты, автоматизация юзер-аккаунтов запрещена
 
-## Конфигурация (`.env`)
 ## Конфигурация (`.env`)
 
 | Переменная | Нужна | Что делает |
@@ -258,6 +257,8 @@ node app.js setup                            # переприменить опи
 | `getUpdates conflict: another getUpdates/webhook instance is running` | Serverless-копия этого бота всё ещё задеплоена на тот же токен. Останови одну из копий. |
 | `Telegram auth failed: Unauthorized` | Неверный `BOT_TOKEN` — сверься с @BotFather. |
 | 418/429 в чате | duck.ai режет частоту; бот сам ретраит со свежими токенами. Если повторяется — подожди пару минут. |
+| `502` от `/v1/chat/completions` на сборках до v1.3.0 | Любая HTTP-ошибка duck.ai отдавалась как 502, включая 400 на `role: "system"`. Починено в v1.3.0: system/developer склеиваются с первым user-сообщением. |
+| `400 invalid_request_error` от API | duck.ai отверг сам запрос — неизвестный id модели или `reasoning_effort`, который модель не поддерживает. Сверься с `GET /v1/models`. |
 | Нет кнопки 🎛 Настройки в меню | `WEBAPP_URL` не задан или не `https://` — см. раздел про Mini App. |
 | `headless-duckapi needs SQLite…` на старте | В твоём Node нет `node:sqlite` (нужен ≥ 22.5; на 22.x запускай `node --experimental-sqlite app.js`), а `better-sqlite3` не собрался. Обнови Node или `npm install better-sqlite3`. |
 | Бот молчит в группах | Так задумано: privacy mode + в группах отвечают только команды. |

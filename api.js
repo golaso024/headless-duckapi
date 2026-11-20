@@ -170,6 +170,15 @@ export function resolveModel(requested, models) {
   return null;
 }
 
+// Models do not all accept the same reasoning efforts: e.g.
+// tinfoil/gpt-oss-120b lists only "low", so the previous hard-coded default
+// "none" made duck.ai answer 400 ERR_BAD_REQUEST. When the client does not
+// ask for a specific effort, pick one the model advertises.
+export function defaultEffort(model) {
+  const efforts = (model && model.efforts) || [];
+  return efforts.includes('none') ? 'none' : (efforts[0] || 'none');
+}
+
 // Chat with automatic model fallback: when duck.ai rejects the resolved model
 // with ERR_MODEL_RESTRICTED / ERR_MODEL_UNAVAILABLE (its own list advertises
 // models the free tier can't use), retry the same family in preferred order.
@@ -268,6 +277,35 @@ async function normalizeMessage(content, fetchFn) {
   return out;
 }
 
+// duck.ai's chat endpoint rejects role:"system" outright:
+//   HTTP 400 {"action":"error","status":400,"type":"ERR_BAD_REQUEST"}
+// Verified for every position, an empty system message and array content; the
+// upstream only accepts user/assistant turns. The OpenAI schema (and our own
+// README) allow system/developer, so fold those prompts into the first user
+// turn instead of forwarding them. Consecutive user turns are fine upstream.
+function foldSystemPrompts(msgs) {
+  const prompts = [];
+  const out = [];
+  for (const m of msgs) {
+    if (m.role !== 'system') { out.push(m); continue; }
+    const text = typeof m.content === 'string'
+      ? m.content
+      : m.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n\n');
+    if (text.trim()) prompts.push(text);
+  }
+  if (!prompts.length) return out;
+  const prefix = prompts.join('\n\n');
+  const firstUser = out.find((m) => m.role === 'user');
+  if (!firstUser) {
+    out.unshift({ role: 'user', content: prefix });
+  } else if (typeof firstUser.content === 'string') {
+    firstUser.content = prefix + '\n\n' + firstUser.content;
+  } else {
+    firstUser.content = [{ type: 'text', text: prefix }, ...firstUser.content];
+  }
+  return out;
+}
+
 async function normalizeMessages(messages, fetchFn) {
   if (!Array.isArray(messages) || !messages.length) throw new Error('messages must be a non-empty array');
   const out = [];
@@ -280,7 +318,9 @@ async function normalizeMessages(messages, fetchFn) {
     }
     out.push({ role, content: await normalizeMessage(m.content, fetchFn) });
   }
-  return out;
+  const folded = foldSystemPrompts(out);
+  if (!folded.length) throw new Error('messages must contain at least one non-empty message');
+  return folded;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +370,9 @@ async function handleChatCompletions(req, res, ctx) {
       '. Available: ' + models.map((m) => m.id).join(', '), 'invalid_request_error', 'model_not_found');
   }
 
-  const effort = body.reasoning_effort != null ? String(body.reasoning_effort) : undefined;
-  if (effort != null && !(model.efforts || []).includes(effort)) {
+  const explicitEffort = body.reasoning_effort != null;
+  const effort = explicitEffort ? String(body.reasoning_effort) : defaultEffort(model);
+  if (explicitEffort && !(model.efforts || []).includes(effort)) {
     return sendError(res, status(400), 'model ' + model.id + ' does not support reasoning_effort "' + effort +
       '" (supported: ' + (model.efforts || []).join(', ') + ')');
   }
@@ -343,7 +384,7 @@ async function handleChatCompletions(req, res, ctx) {
   const params = {
     model: model.id,
     messages,
-    effort: effort || 'none',
+    effort,
     webSearch: body.web_search === true,
     image: wantImage,
     fetchFn,
@@ -438,7 +479,9 @@ async function handleChatCompletions(req, res, ctx) {
     // headers are already sent — report the error as a final chunk + [DONE]
     try {
       const msg = (e && e.message) || String(e);
-      send({ error: { message: msg, type: /HTTP 418|HTTP 429/.test(msg) ? 'rate_limit_error' : 'api_error', code: null } });
+      const type = /HTTP 418|HTTP 429/.test(msg) ? 'rate_limit_error'
+        : /HTTP 400/.test(msg) ? 'invalid_request_error' : 'api_error';
+      send({ error: { message: msg, type, code: null } });
       res.write('data: [DONE]\n\n');
       res.end();
     } catch (e2) { /* socket gone */ }
@@ -450,6 +493,13 @@ function upstreamError(res, e, status) {
   const msg = (e && e.message) || String(e);
   if (/HTTP 418|HTTP 429/.test(msg)) {
     return sendError(res, st(429), 'duck.ai is rate-limiting this IP (' + msg + '). Wait a moment and retry.', 'rate_limit_error');
+  }
+  // duck.ai 400 = the request shape is wrong (unsupported role/effort/model
+  // combination), not a transient gateway failure. Surface it as 400 so OpenAI
+  // clients don't retry a request that can never succeed — retry storms are
+  // exactly what pushes a shared IP into duck.ai's 429 window.
+  if (/HTTP 400/.test(msg)) {
+    return sendError(res, st(400), 'duck.ai rejected the request: ' + msg, 'invalid_request_error');
   }
   if (/HTTP \d{3}/.test(msg)) {
     return sendError(res, st(502), 'duck.ai upstream error: ' + msg, 'api_error');

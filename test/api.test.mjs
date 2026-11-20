@@ -14,6 +14,8 @@ const MODELS = [
   { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', provider: 'openai', free: true, image: false, efforts: ['none', 'low', 'medium'] },
   { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini', provider: 'openai', free: true, image: true, efforts: ['none', 'low', 'medium'] },
   { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', provider: 'anthropic', free: true, image: false, efforts: ['none', 'low'] },
+  // advertises only "low": the API must not send the old hard-coded "none"
+  { id: 'tinfoil/gpt-oss-120b', name: 'gpt-oss 120B', provider: 'tinfoil', free: true, image: false, efforts: ['low'] },
 ];
 
 const chatCalls = [];
@@ -45,8 +47,14 @@ console.log('  ✓ resolveModel: exact / case-insensitive / preferred default / 
 const key = 'test-key-123';
 const authServer = await startApiServer({ port: 0, apiKey: key, chat: fakeChat, listModels: async () => MODELS });
 const openServer = await startApiServer({ port: 0, chat: fakeChat, listModels: async () => MODELS });
+const badServer = await startApiServer({
+  port: 0,
+  chat: async () => { throw new Error('duck.ai chat HTTP 400: {"action":"error","status":400,"type":"ERR_BAD_REQUEST"}'); },
+  listModels: async () => MODELS,
+});
 const AUTH = 'http://127.0.0.1:' + authServer.address().port;
 const OPEN = 'http://127.0.0.1:' + openServer.address().port;
+const BAD = 'http://127.0.0.1:' + badServer.address().port;
 
 // --- /health -------------------------------------------------------------
 
@@ -81,7 +89,7 @@ const OPEN = 'http://127.0.0.1:' + openServer.address().port;
   assert.equal(r.status, 200);
   const j = await r.json();
   assert.equal(j.object, 'list');
-  assert.deepEqual(j.data.map((m) => m.id), ['gpt-5.6-terra', 'gpt-5.4-mini', 'claude-haiku-4-5']);
+  assert.deepEqual(j.data.map((m) => m.id), ['gpt-5.6-terra', 'gpt-5.4-mini', 'claude-haiku-4-5', 'tinfoil/gpt-oss-120b']);
   assert.equal(j.data[0].object, 'model');
   assert.equal(j.data[0].owned_by, 'openai');
   assert.deepEqual(j.data[0].reasoning_efforts, ['none', 'low', 'medium']);
@@ -114,7 +122,39 @@ const OPEN = 'http://127.0.0.1:' + openServer.address().port;
   assert.ok(j.usage.total_tokens > 0);
   assert.equal(chatCalls.length, 1);
   assert.equal(chatCalls[0].effort, 'none'); // default
-  console.log('  ✓ non-stream chat.completion: content, usage, default effort');
+  // duck.ai rejects role:"system" with HTTP 400 ERR_BAD_REQUEST — the API must
+  // fold it into the first user turn before calling the engine.
+  assert.ok(chatCalls[0].messages.every((m) => m.role !== 'system'));
+  assert.deepEqual(chatCalls[0].messages, [{ role: 'user', content: 'You are a duck.\n\nHi' }]);
+  console.log('  ✓ non-stream chat.completion: content, usage, default effort, system folded');
+
+  // developer is OpenAI's newer system role — same folding, same guarantee.
+  chatCalls.length = 0;
+  const rd = await fetch(OPEN + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.4-mini',
+      messages: [{ role: 'developer', content: 'Be terse.' }, { role: 'user', content: 'Hi' }],
+    }),
+  });
+  assert.equal(rd.status, 200);
+  assert.deepEqual(chatCalls[0].messages, [{ role: 'user', content: 'Be terse.\n\nHi' }]);
+  console.log('  ✓ developer role folded into the first user turn');
+}
+
+// --- default reasoning effort must match the model ---------------------------
+
+{
+  chatCalls.length = 0;
+  const r = await fetch(OPEN + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'tinfoil/gpt-oss-120b', messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(chatCalls[0].effort, 'low'); // "none" is rejected by duck.ai for this model
+  console.log('  ✓ default effort: gpt-oss-120b (only "low" advertised) → "low", not "none"');
 }
 
 // --- streaming (SSE chunks + [DONE]) ---------------------------------------
@@ -200,6 +240,8 @@ const OPEN = 'http://127.0.0.1:' + openServer.address().port;
   assert.equal(r.status, 400);
   r = await post({ messages: [{ role: 'tool', content: 'x' }] });
   assert.equal(r.status, 400);
+  r = await post({ messages: [{ role: 'system', content: '' }] });
+  assert.equal(r.status, 400); // nothing left after folding
   r = await post({ messages: [{ role: 'user', content: 'hi' }], model: 'no-such-model' });
   assert.equal(r.status, 404);
   assert.equal((await r.json()).error.code, 'model_not_found');
@@ -242,6 +284,21 @@ const OPEN = 'http://127.0.0.1:' + openServer.address().port;
   console.log('  ✓ ERR_MODEL_RESTRICTED → automatic fallback to the next family candidate');
 }
 
+// --- upstream 400 is a client error, not a gateway error ---------------------
+
+{
+  const r = await fetch(BAD + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(r.status, 400); // NOT 502: clients must not retry a request that can never succeed
+  const j = await r.json();
+  assert.equal(j.error.type, 'invalid_request_error');
+  console.log('  ✓ upstream 400 → 400 invalid_request_error (no retry storm)');
+}
+
 authServer.close();
 openServer.close();
+badServer.close();
 console.log('api.test.mjs: all checks passed');

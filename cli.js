@@ -28,6 +28,16 @@ import * as duckai from './bot/lib/duckai.js';
 import { makeProxiedFetch, redactProxyUrl } from './bot/lib/proxyfetch.js';
 
 const HISTORY_LIMIT = 12;
+
+// Version shown in the welcome box — read from package.json so a release bump
+// does not leave a stale string behind.
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version || 'dev';
+  } catch {
+    return 'dev';
+  }
+})();
 const OUT_DIR = path.resolve(process.env.DUCK_CLI_OUT || './out');
 const EFFORTS = ['none', 'low', 'medium'];
 const FALLBACK_MODELS = [
@@ -148,7 +158,7 @@ async function renderWelcomeBox() {
     else l = left[i] || '';
     return '┊ ' + padV(l, lw) + '┊ ' + padV(right[i] || '', rw) + ' ┊';
   };
-  const title = bold('duck.ai CLI v1.2.0');
+  const title = bold('duck.ai CLI v' + VERSION);
   const rowsArr = [];
   rowsArr.push(dim('·─ ') + title + dim(' ' + '─'.repeat(Math.max(3, lw + rw + 6 - 22)) + '·'));
   for (let i = 0; i < inner; i++) rowsArr.push(buildRow(i, false));

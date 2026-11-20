@@ -132,14 +132,14 @@ OpenAI client compatibility (`baseURL = http://localhost:8081/v1`, any `apiKey` 
 
 - stale model ids (`gpt-4o-mini`, `claude-3-haiku`, …) resolve to the closest current duck.ai model — `GET /v1/models` is the source of truth;
 - `content` may be an array of parts: `{type:"text"}` and `{type:"image_url"}` (data: or http(s) URLs; JPEG is re-encoded to PNG in pure JS — duck.ai rejects JPEG parts);
-- `role: "developer"` maps to `system`;
+- `system` and `role: "developer"` prompts are folded into the first user turn — duck.ai rejects `system` outright with HTTP 400, so the prompt is kept but sent as a user turn;
 - `temperature`, `max_tokens` and friends are accepted and ignored — duck.ai has no such knobs.
 
 Extensions beyond the OpenAI schema, all optional:
 
 | Field | Meaning |
 |---|---|
-| `reasoning_effort: "none" / "low" / "medium"` | duck.ai reasoning effort (validated against the model, so you get a 400 instead of a duck.ai 400) |
+| `reasoning_effort: "none" / "low" / "medium"` | duck.ai reasoning effort (validated against the model, so you get a 400 instead of a duck.ai 400). Omitted → the model's own default is used (`none` where advertised, `low` for `tinfoil/gpt-oss-120b`) |
 | `web_search: true` | duck.ai WebSearch tool |
 | `image: true` | duck.ai GenerateImage tool — the response carries `message.images: ["data:image/…;base64,…"]` (known to work with the GPT models; the bot's default for `/img` is `gpt-6-luna`) |
 
@@ -250,6 +250,8 @@ Solved tokens, frontend versions and protocol counters are persisted in SQLite (
 | `getUpdates conflict: another getUpdates/webhook instance is running` | The Serverless copy of this bot is still deployed on the same token. Stop one of them. |
 | `Telegram auth failed: Unauthorized` | Wrong `BOT_TOKEN` — re-check @BotFather. |
 | 418/429 messages in chat | duck.ai is rate-limiting; the bot retries with fresh tokens automatically. If it persists, wait a few minutes. |
+| `502` from `/v1/chat/completions` on builds before v1.3.0 | Every duck.ai HTTP error was mapped to 502, including the 400 duck.ai returns for `role: "system"`. Fixed in v1.3.0: system/developer prompts are folded into the first user turn. |
+| `400 invalid_request_error` from the API | duck.ai rejected the request shape — unknown model id, or a `reasoning_effort` that model does not advertise. Compare with `GET /v1/models`. |
 | No 🎛 Настройки button in the menu keyboard | `WEBAPP_URL` is not set to an `https://` URL — see the Mini App section. |
 | `headless-duckapi needs SQLite…` at boot | Your Node lacks `node:sqlite` (needs ≥ 22.5; on 22.x run `node --experimental-sqlite app.js`) and `better-sqlite3` failed to install. Upgrade Node or `npm install better-sqlite3`. |
 | Bot is silent in groups | By design: privacy mode + group messages are answered on commands only. |
